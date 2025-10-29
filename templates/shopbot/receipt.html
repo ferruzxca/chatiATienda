@@ -1,0 +1,29 @@
+{% extends "base.html" %}
+{% block content %}
+<div class="ticket">
+  <h2>{{ order.invoice_requested|yesno:"Factura,Ticket" }} de Compra</h2>
+  <p><b>Folio:</b> #{{ order.id }} · {{ order.created_at }}</p>
+  {% if order.invoice_requested %}<p><b>RFC:</b> {{ order.rfc }}</p>{% endif %}
+  <table class="carttbl">
+    <thead><tr><th>Producto</th><th>Cant</th><th>Precio</th><th>Importe</th></tr></thead>
+    <tbody>
+      {% for it in order.items.all %}
+      <tr>
+        <td>{{ it.product.name }} {{ it.product.brand }}</td>
+        <td>{{ it.quantity }}</td>
+        <td>${{ it.unit_price }}</td>
+        <td>${{ it.line_total }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+    <tfoot>
+      <tr><td colspan="3">Subtotal</td><td>${{ order.subtotal }}</td></tr>
+      <tr><td colspan="3">IVA</td><td>${{ order.tax }}</td></tr>
+      <tr class="total"><td colspan="3">Total</td><td>${{ order.total }}</td></tr>
+    </tfoot>
+  </table>
+  <p><b>Método de pago:</b> {{ order.payment_method|title }}</p>
+  <p>Comprobante enviado a: {{ order.email }}</p>
+  <div class="thanks">Gracias por tu compra.</div>
+</div>
+{% endblock %}

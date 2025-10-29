@@ -1,0 +1,21 @@
+{% if lines %}
+<table class="carttbl">
+  <thead><tr><th>Producto</th><th>Cant</th><th>Importe</th></tr></thead>
+  <tbody>
+  {% for ln in lines %}
+    <tr>
+      <td>{{ ln.p.name }} {{ ln.p.brand }}</td>
+      <td>{{ ln.qty }}</td>
+      <td>${{ ln.line_total }}</td>
+    </tr>
+  {% endfor %}
+  </tbody>
+  <tfoot>
+    <tr><td colspan="2">Subtotal</td><td>${{ subtotal }}</td></tr>
+    <tr><td colspan="2">IVA 16%</td><td>${{ tax }}</td></tr>
+    <tr class="total"><td colspan="2">Total</td><td>${{ total }}</td></tr>
+  </tfoot>
+</table>
+{% else %}
+<div class="empty">Sin productos.</div>
+{% endif %}
