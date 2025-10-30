@@ -1,7 +1,7 @@
-from django.shortcuts import render
-from django.http import JsonResponse, HttpRequest
-from django.template.loader import render_to_string
 from decimal import Decimal
+from django.http import JsonResponse, HttpRequest
+from django.shortcuts import render
+from django.template.loader import render_to_string
 from .models import Product, Order, OrderItem
 from .nlp import (
     intent, extract_qty, find_products, top_margin,
@@ -44,7 +44,11 @@ def _cart_html(request):
     )
 
 def chat(request: HttpRequest):
-    request.session.setdefault("stage", "chat")
+    request.session["stage"] = "chat"
+    request.session["cart"] = {}
+    for k in ("invoice", "payment_method", "rfc", "email", "last_order_id"):
+        request.session.pop(k, None)
+    request.session.modified = True
     return render(request, "shopbot/chat.html")
 
 def api_add_product(request: HttpRequest):
@@ -58,25 +62,22 @@ def api_add_product(request: HttpRequest):
         reply = "Perfecto. Agregué el producto al carrito."
     except Product.DoesNotExist:
         reply = "No encontré ese producto. En esta tienda no se vende."
-    html = _cart_html(request)
-    return JsonResponse({"reply": reply, "cart_html": html})
+    return JsonResponse({"reply": reply, "cart_html": _cart_html(request)})
 
 def api_message(request: HttpRequest):
-    msg = request.POST.get("message","").strip()
-    stg = request.session.get("stage","chat")
+    msg = request.POST.get("message", "").strip()
+    stg = request.session.get("stage", "chat")
     cart = _session_cart(request)
 
-    # Etapas de cierre
     if stg == "ask_invoice":
-        need = msg.lower().startswith(("s","y"))
+        need = msg.lower().startswith(("s", "y"))
         request.session["invoice"] = need
         request.session["stage"] = "ask_payment"
         return JsonResponse({"reply": "¿Método de pago? efectivo, tarjeta o transferencia.", "cart_html": _cart_html(request)})
 
     if stg == "ask_payment":
-        method = "efectivo" if "efectivo" in msg.lower() else \
-                 "tarjeta" if "tarjeta" in msg.lower() else \
-                 "transferencia" if "transferencia" in msg.lower() else None
+        ml = msg.lower()
+        method = "efectivo" if "efectivo" in ml else "tarjeta" if "tarjeta" in ml else "transferencia" if "transferencia" in ml else None
         if not method:
             return JsonResponse({"reply": "Indica: efectivo, tarjeta o transferencia.", "cart_html": _cart_html(request)})
         request.session["payment_method"] = method
@@ -84,111 +85,104 @@ def api_message(request: HttpRequest):
             request.session["stage"] = "ask_rfc"
             return JsonResponse({"reply": "Dame tu RFC para la factura.", "cart_html": _cart_html(request)})
         request.session["stage"] = "ask_email"
-        return JsonResponse({"reply": "Compra registrada. ¿Me compartes un correo para enviarte promociones y tu ticket?", "cart_html": _cart_html(request)})
+        return JsonResponse({"reply": "Compra registrada. ¿Correo para enviarte ticket y promociones?", "cart_html": _cart_html(request)})
 
     if stg == "ask_rfc":
         request.session["rfc"] = msg.strip().upper()
         request.session["stage"] = "ask_email"
-        return JsonResponse({"reply": "Gracias. ¿Correo para enviarte factura y promociones?", "cart_html": _cart_html(request)})
+        return JsonResponse({"reply": "Gracias. ¿Correo para enviar la factura y promociones?", "cart_html": _cart_html(request)})
 
     if stg == "ask_email":
         request.session["email"] = msg.strip()
         lines, subtotal, tax, total = _cart_totals(cart)
         order = Order.objects.create(
             subtotal=subtotal, tax=tax, total=total, paid=True,
-            payment_method=request.session.get("payment_method",""),
-            email=request.session.get("email",""),
+            payment_method=request.session.get("payment_method", ""),
+            email=request.session.get("email", ""),
             invoice_requested=bool(request.session.get("invoice")),
-            rfc=request.session.get("rfc",""),
+            rfc=request.session.get("rfc", ""),
         )
         for ln in lines:
             OrderItem.objects.create(order=order, product=ln["p"], quantity=ln["qty"], unit_price=ln["p"].price)
         request.session["stage"] = "done"
         request.session["last_order_id"] = order.id
         request.session["cart"] = {}
-        return JsonResponse({"reply": f"Listo. Ticket {'y factura ' if order.invoice_requested else ''}pagados. Gracias por tu compra. Descarga tu comprobante: /recibo/{order.id}/", "cart_html": _cart_html(request)})
+        return JsonResponse({"reply": f"Listo. Ticket {'y factura ' if order.invoice_requested else ''}pagados. Descarga: /recibo/{order.id}/", "cart_html": _cart_html(request)})
 
-    # Chat normal
     it = intent(msg)
-    cat = extract_category(msg)  # categoría detectada en el mensaje
+    cat = extract_category(msg)
+    cat_exists = Product.objects.filter(category__icontains=cat).exists() if cat else None
 
     if it == "add":
         qty = extract_qty(msg)
-        products = find_products(msg, category=cat)
 
-        # Si el usuario pidió una categoría específica que no vendemos
-        if cat and not products:
-            reply = f"No se vende la categoría solicitada ('{cat}') en esta tienda."
-            return JsonResponse({"reply": reply, "cart_html": _cart_html(request)})
+        if cat and not cat_exists:
+            options = top_margin(3)
+            reply = f"No manejamos la categoría '{cat}'. Te sugiero estas opciones:"
+            sugg = [{"sku": p.sku, "text": f"{p.name} {p.brand} ${p.price}"} for p in options]
+            return JsonResponse({"reply": reply, "suggestions": sugg, "cart_html": _cart_html(request)})
 
-        # Marca no registrada → ofrecer 3 similares SOLO de esa categoría si existe
         b = brand_in_msg(msg)
         if b and not known_brand(b):
             options = top_margin(3, category=cat) if cat else top_margin(3)
-            if cat and not options:
-                # categoría pedida pero sin inventario
-                reply = f"No se vende la categoría solicitada ('{cat}') en esta tienda."
-                return JsonResponse({"reply": reply, "cart_html": _cart_html(request)})
-            reply = f"No manejo la marca '{b}'. Te ofrezco estas opciones con excelente valor:"
+            reply = f"No tenemos la marca '{b}'. Opciones recomendadas:"
             sugg = [{"sku": p.sku, "text": f"{p.name} {p.brand} ${p.price}"} for p in options]
             return JsonResponse({"reply": reply, "suggestions": sugg, "cart_html": _cart_html(request)})
 
-        # Si no encontró nada y tampoco hay categoría clara → sugerencias generales
+        products = find_products(msg, category=cat)
         if not products:
-            options = top_margin(3)
-            reply = "No identifiqué el producto. Mira estas opciones recomendadas:"
+            options = top_margin(3, category=cat) if (cat and cat_exists) else top_margin(3)
+            reply = "No tenemos ese producto. Mira estas alternativas:"
             sugg = [{"sku": p.sku, "text": f"{p.name} {p.brand} ${p.price}"} for p in options]
             return JsonResponse({"reply": reply, "suggestions": sugg, "cart_html": _cart_html(request)})
 
-        # Agrega el mejor por margen dentro del conjunto filtrado
         p = sorted(products, key=lambda x: (-x.margin_rate(), -x.margin_abs()))[0]
         _cart_add(cart, p.sku, qty)
         request.session.modified = True
 
-        # Upsell relacionado o por margen dentro de la misma categoría si es posible
         comp = None
         if cat:
-            comp_candidates = top_margin(3, category=cat)
-            comp = next((x for x in comp_candidates if x.sku != p.sku), None)
+            pool = [x for x in top_margin(3, category=cat) if x.sku != p.sku]
+            comp = pool[0] if pool else None
         if not comp:
             key = cat or next((k for k in COMPLEMENTOS.keys() if k in msg.lower()), None)
             if key:
                 from .nlp import find_products as fp
                 comp = next((x for x in fp(COMPLEMENTOS.get(key, "")) if x.sku != p.sku), None)
         if not comp:
-            comp = top_margin(1, category=cat)[0] if cat and top_margin(1, category=cat) else top_margin(1)[0]
+            comp = (top_margin(1, category=cat) or top_margin(1))[0]
 
-        reply = f"Agregué {qty} x {p.name} {p.brand}. Te recomiendo además: {comp.name} {comp.brand}."
+        reply = f"Agregué {qty} x {p.name} {p.brand}. Recomendación: {comp.name} {comp.brand}."
         sugg = [{"sku": comp.sku, "text": f"{comp.name} {comp.brand} ${comp.price}"}]
         return JsonResponse({"reply": reply, "suggestions": sugg, "cart_html": _cart_html(request)})
 
     if it == "remove":
         products = find_products(msg, category=cat)
-        if cat and not products:
-            return JsonResponse({"reply": f"No se vende la categoría solicitada ('{cat}') en esta tienda.", "cart_html": _cart_html(request)})
+        if cat and cat_exists is False:
+            return JsonResponse({"reply": f"No manejamos la categoría '{cat}'.", "cart_html": _cart_html(request)})
         if products:
             _cart_remove(cart, products[0].sku)
-            reply = "Listo. Ajusté tu carrito."
-        else:
-            reply = "Indica qué producto quieres quitar."
-        return JsonResponse({"reply": reply, "cart_html": _cart_html(request)})
+            return JsonResponse({"reply": "Listo. Ajusté tu carrito.", "cart_html": _cart_html(request)})
+        return JsonResponse({"reply": "Indica qué producto quieres quitar.", "cart_html": _cart_html(request)})
 
     if it == "show_cart":
         return JsonResponse({"reply": "Este es tu pedido actual.", "cart_html": _cart_html(request)})
 
     if it == "invoice":
         request.session["stage"] = "ask_invoice"
-        return JsonResponse({"reply": "¿Necesitas factura? responde sí o no.", "cart_html": _cart_html(request)})
+        return JsonResponse({"reply": "¿Necesitas factura? sí o no.", "cart_html": _cart_html(request)})
 
     if it == "checkout":
         request.session["stage"] = "ask_invoice"
         return JsonResponse({"reply": "Vamos a cerrar. ¿Necesitas factura? sí/no.", "cart_html": _cart_html(request)})
 
-    # Mensaje desconocido → si hay categoría pero no vendemos, avisar. Si no, sugerencias generales.
-    if cat and not top_margin(1, category=cat):
-        return JsonResponse({"reply": f"No se vende la categoría solicitada ('{cat}') en esta tienda.", "cart_html": _cart_html(request)})
+    if cat and cat_exists is False:
+        options = top_margin(3)
+        reply = f"No manejamos la categoría '{cat}'. Te dejo alternativas:"
+        sugg = [{"sku": p.sku, "text": f"{p.name} {p.brand} ${p.price}"} for p in options]
+        return JsonResponse({"reply": reply, "suggestions": sugg, "cart_html": _cart_html(request)})
 
-    options = top_margin(3, category=cat) if cat else top_margin(3)
+    options = top_margin(3, category=cat) if (cat and cat_exists) else top_margin(3)
     reply = "Te muestro opciones disponibles."
     sugg = [{"sku": p.sku, "text": f"{p.name} {p.brand} ${p.price}"} for p in options]
     return JsonResponse({"reply": reply, "suggestions": sugg, "cart_html": _cart_html(request)})

@@ -1,7 +1,7 @@
 import re, unicodedata
 from typing import List, Optional
-from .models import Product
 from decimal import Decimal
+from .models import Product
 
 IVA = Decimal("0.16")
 
@@ -10,27 +10,27 @@ def norm(s: str) -> str:
     s = "".join(c for c in unicodedata.normalize("NFD", s) if unicodedata.category(c) != "Mn")
     return s
 
-# Catálogo canónico de categorías y sus patrones de detección en texto
+# Detección de categorías en texto
 CATEGORY_PATTERNS = {
-    "coca":        r"\b(coca(\s|-)?cola|refresco\s*coca|coca\s*600|refresco)\b",
-    "pepsi":       r"\b(pepsi|refresco\s*pepsi)\b",
-    "agua":        r"\b(agua|bonafont|epura|ciel)\b",
-    "pan":         r"\b(pan|bimbo)\b",
-    "leche":       r"\b(leche|lala|alpura)\b",
-    "huevo":       r"\b(huevo|docena)\b",
-    "atun":        r"\b(at[uú]n|dolores|tuni)\b",
-    "aceite":      r"\b(aceite)\b",
-    "cafe":        r"\b(caf[eé]|nescafe|soluble)\b",
-    "harina":      r"\b(maseca|harina)\b",
-    "jabonzote":   r"\b(zote|jab[oó]n)\b",
-    "shampoo":     r"\b(shampoo|head\s*&?\s*shoulders|h&s)\b",
-    "papas":       r"\b(papas|sabritas)\b",
-    "oreo":        r"\b(oreo|galletas)\b",
+    "coca":      r"\b(coca(\s|-)?cola|refresco\s*coca|coca\s*600)\b",
+    "pepsi":     r"\b(pepsi|refresco\s*pepsi)\b",
+    "agua":      r"\b(agua|bonafont|epura|ciel)\b",
+    "pan":       r"\b(pan|bimbo)\b",
+    "leche":     r"\b(leche|lala|alpura)\b",
+    "huevo":     r"\b(huevo|docena)\b",
+    "atun":      r"\b(at[uú]n|dolores|tuni)\b",
+    "aceite":    r"\b(aceite)\b",
+    "cafe":      r"\b(caf[eé]|nescafe|soluble)\b",
+    "harina":    r"\b(maseca|harina)\b",
+    "jabonzote": r"\b(zote|jab[oó]n)\b",
+    "shampoo":   r"\b(shampoo|head\s*&?\s*shoulders|h&s)\b",
+    "papas":     r"\b(papas|sabritas)\b",
+    "oreo":      r"\b(oreo|galletas)\b",
 }
 
-# Aliases mínimos para aumentar recall de nombre/brand
+# Aliases para aumentar recall
 ALIASES = {
-    "coca": ["coca cola","coca-cola","coca600","coca 600","refresco"],
+    "coca": ["coca cola","coca-cola","coca600","coca 600","refresco coca"],
     "pepsi": ["pepsi","refresco pepsi"],
     "agua": ["agua","bonafont","epura","ciel"],
     "pan": ["pan bimbo","pan blanco","bimbo"],
@@ -69,9 +69,6 @@ def extract_category(msg: str) -> Optional[str]:
     return None
 
 def find_products(msg: str, category: Optional[str] = None) -> List[Product]:
-    """
-    Busca productos; si se pasa category, restringe al campo category.
-    """
     q = norm(msg)
     hits = set()
 
@@ -81,20 +78,20 @@ def find_products(msg: str, category: Optional[str] = None) -> List[Product]:
             continue
         for a in arr:
             if norm(a) in q:
-                qs = Product.objects.filter(category__icontains=key) | \
-                     Product.objects.filter(name__icontains=key)
+                qs = Product.objects.filter(category__icontains=key) | Product.objects.filter(name__icontains=key)
                 hits.update(qs)
 
-    # 2) búsqueda amplia por tokens
+    # 2) tokens
     tokens = [t for t in re.findall(r"[a-zA-Záéíóúñ0-9]+", msg) if len(t) >= 3]
     base_qs = Product.objects.all()
     if category:
         base_qs = base_qs.filter(category__icontains=category)
     for t in tokens:
-        hits.update(base_qs.filter(name__icontains=t) |
-                    base_qs.filter(brand__icontains=t) |
-                    base_qs.filter(category__icontains=t))
-
+        hits.update(
+            base_qs.filter(name__icontains=t) |
+            base_qs.filter(brand__icontains=t) |
+            base_qs.filter(category__icontains=t)
+        )
     return list(hits)
 
 def top_margin(n=3, category: Optional[str]=None) -> List[Product]:
